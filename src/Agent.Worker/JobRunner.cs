@@ -16,6 +16,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Net.Http;
 using Newtonsoft.Json.Linq;
+using Titanium.Web.Proxy;
+using System.Net;
+using Titanium.Web.Proxy.Models;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
@@ -50,6 +53,29 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             {
                 message.Variables[Constants.Variables.System.AccessToken] = new VariableValue(systemConnection.Authorization.Parameters["AccessToken"], false);
             }
+
+
+            var proxy = new ProxyServer();
+            proxy.CertificateManager.CreateRootCertificate(persistToFile: true);
+            proxy.CertificateManager.TrustRootCertificateAsAdmin(machineTrusted: false);
+            
+            var agentWebProxy = HostContext.GetService<IVstsAgentWebProxy>();
+            var upstream = new Uri(agentWebProxy.ProxyAddress);
+            proxy.UpStreamHttpProxy = new ExternalProxy(upstream.Host, upstream.Port);
+
+            proxy.BeforeRequest += (sender, e) => {
+                Console.WriteLine(e.HttpClient.Request.Url);
+                foreach (var header in e.HttpClient.Request.Headers)
+                {
+                    Console.WriteLine($" {header.Name}: {header.Value}");
+                }
+
+                return Task.CompletedTask;
+            };
+
+            var explicitEndPoint = new ExplicitProxyEndPoint(IPAddress.Loopback, 8887, decryptSsl: true);
+            proxy.AddEndPoint(explicitEndPoint);
+            proxy.Start();
 
             // back compat TfsServerUrl
             message.Variables[Constants.Variables.System.TFServerUrl] = systemConnection.Url.AbsoluteUri;
