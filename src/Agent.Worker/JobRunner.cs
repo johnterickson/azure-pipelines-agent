@@ -19,6 +19,7 @@ using Newtonsoft.Json.Linq;
 using Titanium.Web.Proxy;
 using System.Net;
 using Titanium.Web.Proxy.Models;
+using System.Diagnostics;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
@@ -45,37 +46,83 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             DateTime jobStartTimeUtc = DateTime.UtcNow;
 
-            ServiceEndpoint systemConnection = message.Resources.Endpoints.Single(x => string.Equals(x.Name, WellKnownServiceEndpointNames.SystemVssConnection, StringComparison.OrdinalIgnoreCase));
+            string proxyTempPassword = Guid.NewGuid().ToString("N").Substring(0,8);
 
+            ServiceEndpoint systemConnection = message.Resources.Endpoints.Single(x => string.Equals(x.Name, WellKnownServiceEndpointNames.SystemVssConnection, StringComparison.OrdinalIgnoreCase));
+            string accessToken = systemConnection.Authorization.Parameters["AccessToken"];
             // System.AccessToken
             if (message.Variables.ContainsKey(Constants.Variables.System.EnableAccessToken) &&
                 StringUtil.ConvertToBoolean(message.Variables[Constants.Variables.System.EnableAccessToken].Value))
             {
-                message.Variables[Constants.Variables.System.AccessToken] = new VariableValue(systemConnection.Authorization.Parameters["AccessToken"], false);
+                message.Variables[Constants.Variables.System.AccessToken] = new VariableValue(accessToken, false);
+                message.Variables["system.proxypassword"] = new VariableValue(proxyTempPassword, false);
             }
 
+            // Debugger.Launch();
+
+            // while (!Debugger.IsAttached)
+            // {
+
+            // }
+
+            var proxyLog = new StreamWriter("proxy.log", append: false);
+            proxyLog.AutoFlush = true;
+
+            proxyLog.WriteLine($"Session password: {proxyTempPassword}");
 
             var proxy = new ProxyServer();
             proxy.CertificateManager.CreateRootCertificate(persistToFile: true);
-            proxy.CertificateManager.TrustRootCertificateAsAdmin(machineTrusted: false);
+            proxy.CertificateManager.TrustRootCertificateAsAdmin(machineTrusted: true);
             
             var agentWebProxy = HostContext.GetService<IVstsAgentWebProxy>();
-            var upstream = new Uri(agentWebProxy.ProxyAddress);
-            proxy.UpStreamHttpProxy = new ExternalProxy(upstream.Host, upstream.Port);
+            if (!string.IsNullOrEmpty(agentWebProxy.ProxyAddress))
+            {
+                var upstream = new Uri(agentWebProxy.ProxyAddress);
+                proxy.UpStreamHttpProxy = new ExternalProxy(upstream.Host, upstream.Port);
+                proxy.UpStreamHttpsProxy = new ExternalProxy(upstream.Host, upstream.Port);
+            }
+
+            proxy.ProxyBasicAuthenticateFunc = (session, username, password) => {
+                proxyLog.WriteLine($"{password} vs {proxyTempPassword}");
+                return Task.FromResult(password == proxyTempPassword);
+            };
 
             proxy.BeforeRequest += (sender, e) => {
-                Console.WriteLine(e.HttpClient.Request.Url);
+                proxyLog.WriteLine(e.HttpClient.Request.Url);
                 foreach (var header in e.HttpClient.Request.Headers)
                 {
-                    Console.WriteLine($" {header.Name}: {header.Value}");
+                    proxyLog.WriteLine($" {header.Name}: {header.Value}");
                 }
 
+                bool authAdded = false;
+                if (e.HttpClient.Request.Url.Contains("dev.azure.com/"))
+                {
+                    if (e.HttpClient.Request.Headers.All(h => h.Name != "Authorization"))
+                    {
+                        e.HttpClient.Request.Headers.AddHeader("Authorization", $"Bearer {accessToken}");
+                        authAdded = true;
+                    }
+                }
+
+                e.HttpClient.Request.Headers.AddHeader("X-TFS-Proxy-Auth-Added", authAdded.ToString().ToLowerInvariant());
+
+                return Task.CompletedTask;
+            };
+
+            proxy.AfterResponse += (sender, e) => {
+                
+                proxyLog.WriteLine($"{e.HttpClient.Request.Url} -> {e.HttpClient.Response.StatusCode}");
                 return Task.CompletedTask;
             };
 
             var explicitEndPoint = new ExplicitProxyEndPoint(IPAddress.Loopback, 8887, decryptSsl: true);
             proxy.AddEndPoint(explicitEndPoint);
             proxy.Start();
+
+            proxyLog.WriteLine($" proxy listening on 8887");
+
+            // proxy.SetAsSystemHttpProxy(explicitEndPoint);
+            // proxy.SetAsSystemHttpsProxy(explicitEndPoint);
 
             // back compat TfsServerUrl
             message.Variables[Constants.Variables.System.TFServerUrl] = systemConnection.Url.AbsoluteUri;
