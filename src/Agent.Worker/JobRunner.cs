@@ -67,6 +67,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             string accessToken = systemConnection.Authorization.Parameters["AccessToken"];
 
             int proxyPort = 8887;
+            var authProxyUrl = new Uri($"http://localhost:{proxyPort}");
             string proxyTempPassword = CreateHash(accessToken);
 
             // System.AccessToken
@@ -75,7 +76,8 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             {
                 message.Variables[Constants.Variables.System.AccessToken] = new VariableValue(accessToken, false);
                 message.Variables["system.proxypassword"] = new VariableValue(proxyTempPassword, false);
-                message.Variables["system.magicauthproxy"] = new VariableValue($"http://user:{proxyTempPassword}@localhost:{proxyPort}", false);
+                message.Variables["system.magicauthproxy"] = new VariableValue(
+                    UrlUtil.GetCredentialEmbeddedUrl(authProxyUrl,"user",proxyTempPassword).AbsoluteUri, false);
             }
 
             // Debugger.Launch();
@@ -86,7 +88,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             // }
 
             var proxyLog = new StreamWriter("proxy.log", append: false);
-            proxyLog.AutoFlush = true;
+            // proxyLog.AutoFlush = true;
 
             proxyLog.WriteLine($"Session password: {proxyTempPassword}");
 
@@ -98,6 +100,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             if (!string.IsNullOrEmpty(agentWebProxy.ProxyAddress))
             {
                 var upstream = new Uri(agentWebProxy.ProxyAddress);
+                // TODO agentWebProxy.ProxyUsername etc
                 proxy.UpStreamHttpProxy = new ExternalProxy(upstream.Host, upstream.Port);
                 proxy.UpStreamHttpsProxy = new ExternalProxy(upstream.Host, upstream.Port);
             }
@@ -108,9 +111,11 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             };
 
             proxy.BeforeRequest += (sender, e) => {
+
+                var url = new Uri(e.HttpClient.Request.Url);
                 lock(proxyLog)
                 {
-                    proxyLog.WriteLine(e.HttpClient.Request.Url);
+                    proxyLog.WriteLine(url);
                     foreach (var header in e.HttpClient.Request.Headers)
                     {
                         proxyLog.WriteLine($" {header.Name}: {header.Value}");
@@ -118,7 +123,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 }
 
                 bool authAdded = false;
-                if (e.HttpClient.Request.Url.Contains("dev.azure.com/"))
+                if (url.Host.EndsWith("dev.azure.com") || url.Host.EndsWith("visualstudio.com"))
                 {
                     if (e.HttpClient.Request.Headers.All(h => h.Name != "Authorization"))
                     {
@@ -137,9 +142,15 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 lock(proxyLog)
                 {
                     proxyLog.WriteLine($"{e.HttpClient.Request.Url} -> {e.HttpClient.Response.StatusCode}");
+                    proxyLog.WriteLine($" Headers:");
                     foreach (var header in e.HttpClient.Response.Headers)
                     {
-                        proxyLog.WriteLine($" {header.Name}: {header.Value}");
+                        proxyLog.WriteLine($"  {header.Name}: {header.Value}");
+                    }
+
+                    foreach(var step in e.TimeLine.OrderBy(kvp => kvp.Value))
+                    {
+                        proxyLog.WriteLine($" {step.Key}: {step.Value}");
                     }
                 }
                 return Task.CompletedTask;
