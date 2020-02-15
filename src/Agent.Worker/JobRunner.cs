@@ -20,6 +20,8 @@ using Titanium.Web.Proxy;
 using System.Net;
 using Titanium.Web.Proxy.Models;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace Microsoft.VisualStudio.Services.Agent.Worker
 {
@@ -34,6 +36,21 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
         private IJobServerQueue _jobServerQueue;
         private ITempDirectoryManager _tempDirectoryManager;
 
+        private static string CreateHash(string hashInput)
+        {
+            using (SHA512 sha1Hash = SHA512.Create())
+            {
+                byte[] data = sha1Hash.ComputeHash(Encoding.UTF8.GetBytes(hashInput));
+                var hexString = new StringBuilder();
+                for (int i = 0; i < data.Length; i++)
+                {
+                    hexString.Append(data[i].ToString("x2"));
+                }
+
+                return hexString.ToString();
+            }
+        }
+
         public async Task<TaskResult> RunAsync(Pipelines.AgentJobRequestMessage message, CancellationToken jobRequestCancellationToken)
         {
             // Validate parameters.
@@ -46,11 +63,12 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             DateTime jobStartTimeUtc = DateTime.UtcNow;
 
-            int proxyPort = 8887;
-            string proxyTempPassword = Guid.NewGuid().ToString("N").Substring(0,8);
-
             ServiceEndpoint systemConnection = message.Resources.Endpoints.Single(x => string.Equals(x.Name, WellKnownServiceEndpointNames.SystemVssConnection, StringComparison.OrdinalIgnoreCase));
             string accessToken = systemConnection.Authorization.Parameters["AccessToken"];
+
+            int proxyPort = 8887;
+            string proxyTempPassword = CreateHash(accessToken);
+
             // System.AccessToken
             if (message.Variables.ContainsKey(Constants.Variables.System.EnableAccessToken) &&
                 StringUtil.ConvertToBoolean(message.Variables[Constants.Variables.System.EnableAccessToken].Value))
@@ -90,10 +108,13 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             };
 
             proxy.BeforeRequest += (sender, e) => {
-                proxyLog.WriteLine(e.HttpClient.Request.Url);
-                foreach (var header in e.HttpClient.Request.Headers)
+                lock(proxyLog)
                 {
-                    proxyLog.WriteLine($" {header.Name}: {header.Value}");
+                    proxyLog.WriteLine(e.HttpClient.Request.Url);
+                    foreach (var header in e.HttpClient.Request.Headers)
+                    {
+                        proxyLog.WriteLine($" {header.Name}: {header.Value}");
+                    }
                 }
 
                 bool authAdded = false;
@@ -113,7 +134,14 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             proxy.AfterResponse += (sender, e) => {
                 
-                proxyLog.WriteLine($"{e.HttpClient.Request.Url} -> {e.HttpClient.Response.StatusCode}");
+                lock(proxyLog)
+                {
+                    proxyLog.WriteLine($"{e.HttpClient.Request.Url} -> {e.HttpClient.Response.StatusCode}");
+                    foreach (var header in e.HttpClient.Response.Headers)
+                    {
+                        proxyLog.WriteLine($" {header.Name}: {header.Value}");
+                    }
+                }
                 return Task.CompletedTask;
             };
 
