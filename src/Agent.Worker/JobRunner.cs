@@ -46,6 +46,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             DateTime jobStartTimeUtc = DateTime.UtcNow;
 
+            int proxyPort = 8887;
             string proxyTempPassword = Guid.NewGuid().ToString("N").Substring(0,8);
 
             ServiceEndpoint systemConnection = message.Resources.Endpoints.Single(x => string.Equals(x.Name, WellKnownServiceEndpointNames.SystemVssConnection, StringComparison.OrdinalIgnoreCase));
@@ -56,6 +57,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             {
                 message.Variables[Constants.Variables.System.AccessToken] = new VariableValue(accessToken, false);
                 message.Variables["system.proxypassword"] = new VariableValue(proxyTempPassword, false);
+                message.Variables["system.magicauthproxy"] = new VariableValue($"http://user:{proxyTempPassword}@localhost:{proxyPort}", false);
             }
 
             // Debugger.Launch();
@@ -115,7 +117,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
                 return Task.CompletedTask;
             };
 
-            var explicitEndPoint = new ExplicitProxyEndPoint(IPAddress.Loopback, 8887, decryptSsl: true);
+            var explicitEndPoint = new ExplicitProxyEndPoint(IPAddress.Loopback, proxyPort, decryptSsl: true);
             proxy.AddEndPoint(explicitEndPoint);
             proxy.Start();
 
