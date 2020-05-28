@@ -88,6 +88,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             // }
 
+            var proxyLogLock = new object();
             var proxyLog = new StreamWriter("proxy.log", append: false);
             // proxyLog.AutoFlush = true;
 
@@ -107,14 +108,17 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
             }
 
             proxy.ProxyBasicAuthenticateFunc = (session, username, password) => {
-                proxyLog.WriteLine($"{password} vs {proxyTempPassword}");
+                lock(proxyLogLock)
+                {
+                    proxyLog.WriteLine($"{password} vs {proxyTempPassword}");
+                }
                 return Task.FromResult(password == proxyTempPassword);
             };
 
             proxy.BeforeRequest += (sender, e) => {
 
                 var url = new Uri(e.HttpClient.Request.Url);
-                lock(proxyLog)
+                lock(proxyLogLock)
                 {
                     proxyLog.WriteLine(url);
                     foreach (var header in e.HttpClient.Request.Headers)
@@ -140,7 +144,7 @@ namespace Microsoft.VisualStudio.Services.Agent.Worker
 
             proxy.AfterResponse += (sender, e) => {
                 
-                lock(proxyLog)
+                lock(proxyLogLock)
                 {
                     proxyLog.WriteLine($"{e.HttpClient.Request.Url} -> {e.HttpClient.Response.StatusCode}");
                     proxyLog.WriteLine($" Headers:");
